@@ -2,84 +2,109 @@
 /**
  * scripts/package-portable.js
  *
- * Builds the Svelte frontend and assembles a zero-install portable bundle.
+ * Builds the Svelte frontend and compiles server.js into a self-contained
+ * native binary (no Node.js install required by end-users).
  *
- * Output layout:
- *   portable-release/
- *     dist/           ← production build
- *     server.js       ← tiny Node static file server (no external deps)
- *     start.sh        ← macOS / Linux launcher
- *     start.bat       ← Windows launcher
- *     key.env.example ← credential template
- *     key.env         ← user's actual key (copied only if present; gitignored)
- *     README.md       ← project readme
+ * Output — portable-release/
+ *   dist/         ← Svelte production build
+ *   server        ← compiled native binary (macOS/Linux)
+ *   server.exe    ← compiled native binary (Windows)
+ *   start.sh      ← macOS/Linux launcher  (just runs ./server)
+ *   start.bat     ← Windows launcher       (just runs server.exe)
+ *   key.env       ← user key (copied if present)
+ *   key.env.example
+ *   README.md
+ *   package.json  ← marks bundle as ESM (used during pkg compilation only)
  *
  * Usage:
- *   node scripts/package-portable.js
- *   npm run package:portable
+ *   npm run package:portable            ← current platform only
+ *   CI calls this per-platform runner
  */
 
 import { execSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
-const OUT = path.join(ROOT, 'portable-release');
-
-// ── Embedded file contents (must be defined before use) ───────────────────────
-
-const SERVER_JS = `/**
- * server.js — zero-dependency static file server for the portable bundle.
- * Run with:  node server.js [port]
- * Default port: 1420
- */
-import http from 'node:http';
 import fs   from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST = path.join(__dirname, 'dist');
-const PORT = Number(process.argv[2]) || 1420;
+const ROOT = path.resolve(__dirname, '..');
+const OUT  = path.join(ROOT, 'portable-release');
+
+// ── Platform detection ────────────────────────────────────────────────────────
+const PLAT = process.platform;           // 'darwin' | 'linux' | 'win32'
+const ARCH = process.arch;               // 'x64' | 'arm64'
+
+let pkgTarget, serverBin, isWindows;
+if (PLAT === 'win32') {
+  pkgTarget  = 'node20-win-x64';
+  serverBin  = 'server.exe';
+  isWindows  = true;
+} else if (PLAT === 'darwin') {
+  pkgTarget  = `node20-macos-${ARCH}`;
+  serverBin  = 'server';
+  isWindows  = false;
+} else {
+  pkgTarget  = `node20-linux-${ARCH}`;
+  serverBin  = 'server';
+  isWindows  = false;
+}
+
+// ── Embedded server source (CommonJS — required for pkg compatibility) ────────
+// Written to OUT so pkg can compile it, then removed after compilation.
+
+const SERVER_JS = `'use strict';
+/**
+ * server.js — zero-dependency static file server for the portable bundle.
+ * Compiled to a native binary via @yao-pkg/pkg; users never run this directly.
+ * Run with:  ./server [port]    (or server.exe on Windows)
+ * Default port: 1420
+ */
+const http = require('http');
+const fs   = require('fs');
+const path = require('path');
+
+// Inside a pkg binary process.pkg is defined; use execPath dir for on-disk files
+const EXEC_DIR = typeof process.pkg !== 'undefined'
+  ? path.dirname(process.execPath)
+  : __dirname;
+
+const DIST    = path.join(EXEC_DIR, 'dist');
+const KEY_ENV = path.join(EXEC_DIR, 'key.env');
+const PORT    = Number(process.argv[2]) || 1420;
 
 const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js':   'application/javascript; charset=utf-8',
-  '.mjs':  'application/javascript; charset=utf-8',
-  '.css':  'text/css; charset=utf-8',
-  '.svg':  'image/svg+xml',
-  '.png':  'image/png',
-  '.ico':  'image/x-icon',
-  '.json': 'application/json',
-  '.woff': 'font/woff',
-  '.woff2':'font/woff2',
+  '.html':  'text/html; charset=utf-8',
+  '.js':    'application/javascript; charset=utf-8',
+  '.mjs':   'application/javascript; charset=utf-8',
+  '.css':   'text/css; charset=utf-8',
+  '.svg':   'image/svg+xml',
+  '.png':   'image/png',
+  '.ico':   'image/x-icon',
+  '.json':  'application/json',
+  '.woff':  'font/woff',
+  '.woff2': 'font/woff2',
 };
-
-const KEY_ENV = path.join(__dirname, 'key.env');
 
 function readKey() {
   try {
-    const raw = fs.readFileSync(KEY_ENV, 'utf8');
+    const raw   = fs.readFileSync(KEY_ENV, 'utf8');
     const match = raw.match(/^TREASURY_API_KEY=(.+)$/m);
     return match ? match[1].trim() : '';
-  } catch { return ''; }
+  } catch (e) { return ''; }
 }
 
 function writeKey(newKey) {
   const line = 'TREASURY_API_KEY=' + newKey.trim();
   let existing = '';
-  try { existing = fs.readFileSync(KEY_ENV, 'utf8'); } catch {}
-  const lines = existing.split(/\\r?\\n/).filter(l => !l.startsWith('TREASURY_API_KEY='));
+  try { existing = fs.readFileSync(KEY_ENV, 'utf8'); } catch (e) {}
+  const lines = existing.split(/\\r?\\n/).filter(function(l) { return !l.startsWith('TREASURY_API_KEY='); });
   lines.unshift(line);
   fs.writeFileSync(KEY_ENV, lines.join('\\n') + '\\n');
 }
 
-const server = http.createServer((req, res) => {
+http.createServer(function(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
-  // Key env API
   if (url.pathname === '/__api/env-key') {
     if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -87,108 +112,77 @@ const server = http.createServer((req, res) => {
     }
     if (req.method === 'POST') {
       let body = '';
-      req.on('data', c => body += c);
-      req.on('end', () => {
+      req.on('data', function(c) { body += c; });
+      req.on('end', function() {
         try {
-          const { key } = JSON.parse(body);
-          writeKey(key || '');
+          const parsed = JSON.parse(body);
+          writeKey(parsed.key || '');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
-        } catch {
-          res.writeHead(400); res.end('Bad JSON');
-        }
+        } catch (e) { res.writeHead(400); res.end('Bad JSON'); }
       });
       return;
     }
   }
 
-  // Static files
   let filePath = path.join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(DIST, 'index.html'); // SPA fallback
+    filePath = path.join(DIST, 'index.html');
   }
 
   const ext  = path.extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'application/octet-stream';
   res.writeHead(200, { 'Content-Type': mime });
   fs.createReadStream(filePath).pipe(res);
-});
-
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(\`DC Finance Client running at http://localhost:\${PORT}\`);
+}).listen(PORT, '127.0.0.1', function() {
+  console.log('DC Finance Client running at http://localhost:' + PORT);
 });
 `;
 
+// Launchers — no Node.js check needed; binary is self-contained
 const START_SH = `#!/usr/bin/env bash
 # DC Finance Client — portable launcher (macOS / Linux)
-# Requires Node.js 18+
+# No external dependencies required.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT=\${DC_PORT:-1420}
 URL="http://localhost:$PORT"
 
-if ! command -v node &>/dev/null; then
-  echo "❌  Node.js not found. Install from https://nodejs.org (LTS) and retry."
-  exit 1
-fi
+chmod +x "$SCRIPT_DIR/server" 2>/dev/null || true
 
-if [ ! -f "$SCRIPT_DIR/key.env" ]; then
-  if [ -f "$SCRIPT_DIR/key.env.example" ]; then
-    cp "$SCRIPT_DIR/key.env.example" "$SCRIPT_DIR/key.env"
-  fi
-fi
-
-echo "🚀  Starting DC Finance Client on $URL …"
-node "$SCRIPT_DIR/server.js" "$PORT" &
+echo "Starting DC Finance Client on $URL ..."
+"$SCRIPT_DIR/server" "$PORT" &
 SERVER_PID=$!
 
-for i in $(seq 1 10); do
-  sleep 0.5
-  if curl -sf "$URL" > /dev/null 2>&1; then break; fi
-done
+# Give the server a moment to bind
+sleep 1
 
+# Open in default browser
 if command -v xdg-open &>/dev/null; then
   xdg-open "$URL"
 elif command -v open &>/dev/null; then
   open "$URL"
 else
-  echo "Open your browser and navigate to $URL"
+  echo "Open your browser and go to $URL"
 fi
 
-echo "(Press Ctrl+C to stop the server)"
+echo "(Press Ctrl+C to stop)"
 wait $SERVER_PID
 `;
 
 const START_BAT = `@echo off
 :: DC Finance Client — portable launcher (Windows)
-:: Requires Node.js 18+ (https://nodejs.org)
-
+:: No external dependencies required.
 setlocal
 set PORT=1420
-set URL=http://localhost:%PORT%
 set SCRIPT_DIR=%~dp0
-
-where node >nul 2>&1
-if errorlevel 1 (
-    echo Node.js not found. Install from https://nodejs.org ^(LTS^) and retry.
-    pause
-    exit /b 1
-)
-
-if not exist "%SCRIPT_DIR%key.env" (
-    if exist "%SCRIPT_DIR%key.env.example" (
-        copy "%SCRIPT_DIR%key.env.example" "%SCRIPT_DIR%key.env" >nul
-    )
-)
+set URL=http://localhost:%PORT%
 
 echo Starting DC Finance Client on %URL% ...
-start "" /b node "%SCRIPT_DIR%server.js" %PORT%
-
-timeout /t 2 /nobreak >nul
-
+start "" /b "%SCRIPT_DIR%server.exe" %PORT%
+timeout /t 1 /nobreak >nul
 start "" "%URL%"
-
 echo Server is running. Close this window to stop.
 pause
 `;
@@ -197,13 +191,9 @@ pause
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const dstPath = path.join(dst, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, dstPath);
-    } else {
-      fs.copyFileSync(srcPath, dstPath);
-    }
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    entry.isDirectory() ? copyDir(s, d) : fs.copyFileSync(s, d);
   }
 }
 
@@ -212,35 +202,52 @@ function copyIfExists(src, dst) {
 }
 
 // ── 1. Build frontend ─────────────────────────────────────────────────────────
-console.log('\n[1/4] Building frontend (npm run build)…');
+console.log('\n[1/5] Building frontend (npm run build)…');
 execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 
-// ── 2. Clean / create output dir ──────────────────────────────────────────────
-console.log('\n[2/4] Preparing portable-release/ directory…');
+// ── 2. Prepare output dir ─────────────────────────────────────────────────────
+console.log('\n[2/5] Preparing portable-release/ directory…');
 if (fs.existsSync(OUT)) fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
-// ── 3. Write bundled files ─────────────────────────────────────────────────────
-console.log('\n[3/4] Writing files…');
+// ── 3. Stage server source + pkg-required package.json ───────────────────────
+console.log('\n[3/5] Staging server source…');
+fs.writeFileSync(path.join(OUT, 'server.js'), SERVER_JS);
+fs.writeFileSync(
+  path.join(OUT, 'package.json'),
+  JSON.stringify({ name: 'dc-finance-server', version: '1.0.0', private: true, type: 'commonjs' }, null, 2) + '\n'
+);
 
+// ── 4. Compile server.js → native binary ─────────────────────────────────────
+console.log(`\n[4/5] Compiling server.js for ${pkgTarget} (this may download a Node binary the first time)…`);
+execSync(
+  `node "${path.join(ROOT, 'node_modules', '@yao-pkg', 'pkg', 'lib-es5', 'bin.js')}" server.js --target ${pkgTarget} --output server`,
+  { cwd: OUT, stdio: 'inherit' }
+);
+
+// Remove source files — users only need the binary
+fs.rmSync(path.join(OUT, 'server.js'));
+fs.rmSync(path.join(OUT, 'package.json'));
+
+// ── 5. Copy assets and write launchers ───────────────────────────────────────
+console.log('\n[5/5] Copying assets and writing launchers…');
 copyDir(path.join(ROOT, 'dist'), path.join(OUT, 'dist'));
 copyIfExists(path.join(ROOT, 'key.env.example'), path.join(OUT, 'key.env.example'));
 copyIfExists(path.join(ROOT, 'README.md'),        path.join(OUT, 'README.md'));
 copyIfExists(path.join(ROOT, 'key.env'),          path.join(OUT, 'key.env'));
 
-fs.writeFileSync(path.join(OUT, 'server.js'),  SERVER_JS);
-fs.writeFileSync(path.join(OUT, 'start.sh'),   START_SH);
-fs.writeFileSync(path.join(OUT, 'start.bat'),  START_BAT);
-fs.chmodSync(path.join(OUT, 'start.sh'), 0o755);
-// Minimal package.json so Node treats server.js as ESM (no warning)
-fs.writeFileSync(
-  path.join(OUT, 'package.json'),
-  JSON.stringify({ name: 'dc-finance-client-portable', version: '1.0.0', private: true, type: 'module' }, null, 2) + '\n'
-);
+if (isWindows) {
+  fs.writeFileSync(path.join(OUT, 'start.bat'), START_BAT);
+} else {
+  fs.writeFileSync(path.join(OUT, 'start.sh'), START_SH);
+  fs.chmodSync(path.join(OUT, 'start.sh'), 0o755);
+  fs.chmodSync(path.join(OUT, 'server'), 0o755);
+}
 
-// ── 4. Done ───────────────────────────────────────────────────────────────────
-console.log('\n[4/4] Done!');
+// ── Done ──────────────────────────────────────────────────────────────────────
+console.log('\n✅  Done!');
 console.log(`\nPortable bundle ready at: ${OUT}`);
-console.log('  → Share the entire portable-release/ folder (or zip it).');
-console.log('  → Users run  start.sh  (Mac/Linux) or  start.bat  (Windows).');
-console.log('  → They must have Node.js ≥ 18 installed (free, one-click).\n');
+console.log('  → Zip and share the entire portable-release/ folder.');
+console.log('  → macOS/Linux: run  ./start.sh');
+console.log('  → Windows:     run  start.bat');
+console.log('  → No Node.js or any other install required.\n');
