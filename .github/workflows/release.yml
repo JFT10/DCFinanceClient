@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Portable self-contained bundles (one per platform, no install needed) ───
+  portable:
+    name: Portable (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            zip-suffix: macos
+          - platform: ubuntu-latest
+            zip-suffix: linux
+          - platform: windows-latest
+            zip-suffix: windows
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --cache /tmp/npm-cache
+
+      - name: Build portable bundle
+        run: node scripts/package-portable.js
+
+      - name: Zip portable bundle (macOS/Linux)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          cd portable-release
+          zip -r ../DCFinanceClient-portable-${{ matrix.zip-suffix }}-${{ github.ref_name }}.zip .
+
+      - name: Zip portable bundle (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: Compress-Archive -Path portable-release\* -DestinationPath DCFinanceClient-portable-${{ matrix.zip-suffix }}-${{ github.ref_name }}.zip
+        shell: pwsh
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.zip-suffix }}
+          path: DCFinanceClient-portable-${{ matrix.zip-suffix }}-${{ github.ref_name }}.zip
+          retention-days: 1
+
+  # ── Tauri native desktop builds ────────────────────────────────────────────
+  tauri:
+    name: Tauri (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Node dependencies
+        run: npm install --cache /tmp/npm-cache
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DC Finance Client ${{ github.ref_name }}'
+          releaseBody: |
+            ## DC Finance Client ${{ github.ref_name }}
+
+            ### 🖥️ Native Desktop App (recommended)
+            Full-featured desktop app with autostart on login.
+
+            | Platform | File |
+            |---|---|
+            | Windows | `.msi` or `.exe` installer |
+            | macOS | `.dmg` (Universal — Intel + Apple Silicon) |
+            | Linux | `.AppImage` or `.deb` |
+
+            ### 📦 Portable Bundle (no install)
+            No Node.js, no Rust, no compilation — just unzip and run.
+
+            | Platform | File |
+            |---|---|
+            | macOS | `DCFinanceClient-portable-macos-*.zip` |
+            | Linux | `DCFinanceClient-portable-linux-*.zip` |
+            | Windows | `DCFinanceClient-portable-windows-*.zip` |
+
+            **macOS/Linux**: unzip → `./start.sh`
+            **Windows**: unzip → double-click `start.bat`
+
+            > **Note**: macOS may warn about an unsigned binary. Right-click → Open to bypass.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  # ── Attach portable bundles to the GitHub Release ─────────────────────────
+  attach-portables:
+    name: Attach Portable Bundles
+    needs: [portable, tauri]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all portable artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: portable-*
+          merge-multiple: true
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DCFinanceClient-portable-*-${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { loadApiKey, saveApiKey, getAuthMe, checkForUpdates, isTauri } from '../lib/api.js';
+  import { isAutopayEnabled, setAutopayEnabled } from '../lib/subscriptions.js';
 
   export let onTriggerUpdateModal = (info) => {};
 
@@ -14,9 +15,47 @@
   let updateStatus = null;
   let saveMessage = null;
 
+  let autostartEnabled = false;
+  let autopayEnabled = true;
+
   onMount(async () => {
     apiKey = await loadApiKey();
+    autopayEnabled = isAutopayEnabled();
+
+    if (isTauri()) {
+      try {
+        const { isEnabled } = await import('@tauri-apps/plugin-autostart');
+        autostartEnabled = await isEnabled();
+      } catch (err) {
+        console.warn('Autostart check failed:', err);
+      }
+    } else {
+      autostartEnabled = localStorage.getItem('dc_autostart_pref') === 'true';
+    }
   });
+
+  async function toggleAutostart() {
+    autostartEnabled = !autostartEnabled;
+    localStorage.setItem('dc_autostart_pref', String(autostartEnabled));
+
+    if (isTauri()) {
+      try {
+        const { enable, disable } = await import('@tauri-apps/plugin-autostart');
+        if (autostartEnabled) {
+          await enable();
+        } else {
+          await disable();
+        }
+      } catch (err) {
+        console.error('Failed to change autostart configuration:', err);
+      }
+    }
+  }
+
+  function toggleAutopay() {
+    autopayEnabled = !autopayEnabled;
+    setAutopayEnabled(autopayEnabled);
+  }
 
   async function handleSaveKey() {
     saving = true;
@@ -157,6 +196,54 @@
         </button>
         <button class="btn btn-primary" on:click={testConnection} disabled={testing || !apiKey}>
           {testing ? 'Testing Key...' : 'Test Connection'}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Startup & Automation Card -->
+  <div class="card settings-card">
+    <div class="card-header">
+      <div class="header-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+      </div>
+      <div>
+        <h2 class="card-title">Startup & Automation</h2>
+        <p class="card-desc">Configure system boot execution and automated subscription dues</p>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <div class="setting-toggle-row">
+        <div>
+          <div class="toggle-title">Run DemocracyCraft Finance on System Startup</div>
+          <div class="toggle-desc">
+            Automatically start the application when your computer turns on to ensure background dues are settled.
+          </div>
+        </div>
+        <button
+          class="switch-btn {autostartEnabled ? 'on' : 'off'}"
+          on:click={toggleAutostart}
+        >
+          {autostartEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+      </div>
+
+      <div class="setting-toggle-row">
+        <div>
+          <div class="toggle-title">Automatically Pay Due Subscriptions on Launch</div>
+          <div class="toggle-desc">
+            When enabled, the client scans your subscriptions on startup and pays any pending dues.
+          </div>
+        </div>
+        <button
+          class="switch-btn {autopayEnabled ? 'on' : 'off'}"
+          on:click={toggleAutopay}
+        >
+          {autopayEnabled ? 'Enabled' : 'Disabled'}
         </button>
       </div>
     </div>
@@ -391,13 +478,53 @@
     color: #fca5a5;
   }
 
-  .spin {
-    animation: spin 1s linear infinite;
+  .setting-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.4);
   }
 
-  @keyframes spin {
-    100% {
-      transform: rotate(360deg);
-    }
+  .setting-toggle-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .toggle-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #f8fafc;
+  }
+
+  .toggle-desc {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin-top: 0.25rem;
+    line-height: 1.35;
+  }
+
+  .switch-btn {
+    padding: 0.45rem 1rem;
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+    flex-shrink: 0;
+  }
+
+  .switch-btn.on {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border-color: #10b981;
+  }
+
+  .switch-btn.off {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+    border-color: #475569;
   }
 </style>

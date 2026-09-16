@@ -7,14 +7,17 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "package:portable": "node scripts/package-portable.js"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.2.0"
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-autostart": "^2.2.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/cli": "^2.2.0",
+    "@yao-pkg/pkg": "^5.12.0",
     "svelte": "^5.19.9",
     "vite": "^6.1.0"
   }

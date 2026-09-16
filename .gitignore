@@ -7,6 +7,7 @@ node_modules/
 dist/
 build/
 src-tauri/target/
+portable-release/
 
 # Environment and Secret Keys
 .env
