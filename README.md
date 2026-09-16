@@ -27,7 +27,29 @@ You may be frightened by this—the server says to *never* give out that key. Wi
 ### Your code?? On my computer??
 I'm making this so that anyone can download it, run the installer, and be good to go for the future; this might be worrisome to some since you're basically downloading some random guy's code onto your computer, and that's reasonable. That's why I made it open source with AGPLv3 license; anyone can view it and it's *really* annoying for another group to distribute it. Also, since updates are going to be manual, there's no backdoor capability.
 
-## Setup & Development
+# Setup
+
+## If downloading portable (easy setup)
+
+### Windows
+
+Double click start.bat and you should be good to go.
+
+### MacOS / Linux
+
+Double click server;
+
+If that doesn't work:
+
+**MacOS**: in finder, find the folder for the portable files; right click it, and select "New Terminal at Folder" at the bottom of the list. In the tab that opens, run    
+```bash
+./start.sh
+```
+
+**Linux**: not a linux user myself; it should be the same idea——run `./start.sh` when in the folder and you're good to go.
+
+
+## If compiling yourself (requires mild programming knowledge)
 
 ### Prerequisites
 - **Node.js**: v18+ (Node 24 recommended)
