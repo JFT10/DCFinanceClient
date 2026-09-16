@@ -72,6 +72,31 @@ export async function checkForUpdates(force = false) {
     const lastAcknowledged = localStorage.getItem('dc_last_seen_commit');
     const hasUpdate = lastAcknowledged !== latestSha;
 
+    // Also fetch latest release assets for direct download
+    let releaseAssets = [];
+    let releaseUrl = null;
+    try {
+      const relRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`, {
+        headers: { Accept: 'application/vnd.github.v3+json' },
+      });
+      if (relRes.ok) {
+        const releases = await relRes.json();
+        if (Array.isArray(releases) && releases.length > 0) {
+          const latestRel = releases[0];
+          releaseUrl = latestRel.html_url;
+          if (Array.isArray(latestRel.assets)) {
+            releaseAssets = latestRel.assets.map(a => ({
+              name: a.name,
+              download_url: a.browser_download_url,
+              size: a.size,
+            }));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch release assets:', e);
+    }
+
     const result = {
       update_available: hasUpdate,
       current_version: CURRENT_VERSION,
@@ -79,7 +104,8 @@ export async function checkForUpdates(force = false) {
       full_commit_sha: latestSha,
       latest_commit_message: commitMessage,
       commit_date: commitDate,
-      html_url: htmlUrl,
+      html_url: releaseUrl || htmlUrl,
+      assets: releaseAssets,
     };
 
     setCached(cacheKey, result, 15 * 60 * 1000); // 15 mins
