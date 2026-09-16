@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Portable browser bundle (no Rust required) ─────────────────────────────
+  portable:
+    name: Portable Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --cache /tmp/npm-cache
+
+      - name: Build portable bundle
+        run: node scripts/package-portable.js
+
+      - name: Zip portable bundle
+        run: |
+          cd portable-release
+          zip -r ../DCFinanceClient-portable-${{ github.ref_name }}.zip .
+
+      - name: Upload portable bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-bundle
+          path: DCFinanceClient-portable-${{ github.ref_name }}.zip
+          retention-days: 1
+
+  # ── Tauri native desktop builds ────────────────────────────────────────────
+  tauri:
+    name: Tauri (${{ matrix.platform }})
+    needs: []   # independent of portable job
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node setup ──────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # ── Rust setup ──────────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # ── Linux system dependencies ────────────────────────────────────────────
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # ── npm install ──────────────────────────────────────────────────────────
+      - name: Install Node dependencies
+        run: npm install --cache /tmp/npm-cache
+
+      # ── Build Tauri app ──────────────────────────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DC Finance Client ${{ github.ref_name }}'
+          releaseBody: |
+            ## DC Finance Client ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | File | Notes |
+            |---|---|---|
+            | Windows | `.msi` installer | Recommended for Windows |
+            | Windows | `.exe` setup | Alternative installer |
+            | macOS | `.dmg` | Universal binary (Intel + Apple Silicon) |
+            | Linux | `.AppImage` | Portable, no install needed |
+            | Linux | `.deb` | Debian / Ubuntu package |
+            | **All platforms** | `DCFinanceClient-portable-*.zip` | **Zero-install browser mode** — requires Node.js 18+ |
+
+            ### Portable Bundle (no install)
+            Download the `-portable-*.zip`, unzip, and run `start.sh` (Mac/Linux) or `start.bat` (Windows).
+            Requires [Node.js 18 LTS](https://nodejs.org) — no Rust, no compilation.
+
+            ### Autostart
+            The desktop app supports automatic startup on login (configure in Settings → Startup & Automation).
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  # ── Attach portable bundle to the release created by Tauri action ──────────
+  attach-portable:
+    name: Attach Portable Bundle to Release
+    needs: [portable, tauri]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-bundle
+
+      - name: Upload portable zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DCFinanceClient-portable-${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

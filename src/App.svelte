@@ -7,14 +7,19 @@
   import Settings from './components/Settings.svelte';
   import UpdateModal from './components/UpdateModal.svelte';
   import RateLimitNotice from './components/RateLimitNotice.svelte';
+  import AutopaySummaryModal from './components/AutopaySummaryModal.svelte';
   import { checkForUpdates } from './lib/api.js';
+  import { isAutopayEnabled, executeDueSubscriptions } from './lib/subscriptions.js';
 
   let currentTab = 'dashboard';
   let updateInfo = null;
   let showUpdateModal = false;
 
+  let autopaySummary = null;
+  let showAutopayModal = false;
+
   onMount(async () => {
-    // Automatically query GitHub when the application first opens to check for updates on main branch
+    // 1. Automatically query GitHub when the application first opens to check for updates on main branch
     try {
       const res = await checkForUpdates();
       if (res && res.update_available) {
@@ -23,6 +28,19 @@
       }
     } catch (err) {
       console.warn('Startup update check notification error:', err);
+    }
+
+    // 2. Automatically execute due subscriptions on startup if enabled
+    if (isAutopayEnabled()) {
+      try {
+        const summary = await executeDueSubscriptions();
+        if (summary.executed > 0 || (summary.errors && summary.errors.length > 0)) {
+          autopaySummary = summary;
+          showAutopayModal = true;
+        }
+      } catch (err) {
+        console.warn('Startup autopay check:', err);
+      }
     }
   });
 
@@ -139,6 +157,14 @@
     <UpdateModal
       updateInfo={updateInfo}
       onClose={() => (showUpdateModal = false)}
+    />
+  {/if}
+
+  <!-- Startup Autopay Summary Prompt -->
+  {#if showAutopayModal}
+    <AutopaySummaryModal
+      summary={autopaySummary}
+      onClose={() => (showAutopayModal = false)}
     />
   {/if}
 </main>

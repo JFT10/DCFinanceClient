@@ -1,8 +1,19 @@
 <script>
   import { onMount } from 'svelte';
+  import {
+    loadSubscriptions,
+    saveSubscriptions,
+    getNextDueDate,
+    isSubscriptionDue,
+    executeDueSubscriptions,
+    loadAutopayHistory,
+  } from '../lib/subscriptions.js';
 
   let subscriptions = [];
+  let history = [];
   let showCreateModal = false;
+  let processingAutopay = false;
+  let autopayStatus = null;
 
   let newName = '';
   let newRecipient = '';
@@ -11,20 +22,12 @@
   let newFrequency = 'weekly'; // 'daily' | 'weekly' | 'monthly'
 
   onMount(() => {
-    loadSubscriptions();
+    refreshData();
   });
 
-  function loadSubscriptions() {
-    try {
-      const stored = localStorage.getItem('dc_subscriptions');
-      subscriptions = stored ? JSON.parse(stored) : [];
-    } catch {
-      subscriptions = [];
-    }
-  }
-
-  function saveSubscriptions() {
-    localStorage.setItem('dc_subscriptions', JSON.stringify(subscriptions));
+  function refreshData() {
+    subscriptions = loadSubscriptions();
+    history = loadAutopayHistory();
   }
 
   function addSubscription() {
@@ -43,7 +46,7 @@
     };
 
     subscriptions = [sub, ...subscriptions];
-    saveSubscriptions();
+    saveSubscriptions(subscriptions);
 
     // Reset
     newName = '';
@@ -54,13 +57,48 @@
 
   function toggleSub(id) {
     subscriptions = subscriptions.map((s) => (s.id === id ? { ...s, active: !s.active } : s));
-    saveSubscriptions();
+    saveSubscriptions(subscriptions);
   }
 
   function deleteSub(id) {
     subscriptions = subscriptions.filter((s) => s.id !== id);
-    saveSubscriptions();
+    saveSubscriptions(subscriptions);
   }
+
+  async function handleRunDueNow() {
+    processingAutopay = true;
+    autopayStatus = null;
+    try {
+      const summary = await executeDueSubscriptions();
+      refreshData();
+      if (summary.executed > 0) {
+        autopayStatus = {
+          success: true,
+          message: `Processed ${summary.executed} subscription(s) for $${summary.totalAmount}!`,
+        };
+      } else if (summary.errors.length > 0) {
+        autopayStatus = {
+          success: false,
+          message: `Encountered errors: ${summary.errors.map((e) => e.error).join(', ')}`,
+        };
+      } else {
+        autopayStatus = {
+          success: true,
+          message: 'All subscriptions are currently up to date.',
+        };
+      }
+    } catch (err) {
+      autopayStatus = {
+        success: false,
+        message: err.message || 'Failed to execute subscriptions',
+      };
+    } finally {
+      processingAutopay = false;
+      setTimeout(() => (autopayStatus = null), 6000);
+    }
+  }
+
+  $: dueCount = subscriptions.filter(isSubscriptionDue).length;
 </script>
 
 <div class="subs-view">
@@ -69,14 +107,35 @@
       <h1 class="page-title">Automated Subscriptions</h1>
       <p class="page-subtitle">Schedule recurring payments to players and businesses</p>
     </div>
-    <button class="btn btn-primary" on:click={() => (showCreateModal = true)}>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="12" y1="5" x2="12" y2="19"/>
-        <line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-      New Subscription
-    </button>
+    <div class="header-actions">
+      <button
+        class="btn btn-secondary"
+        on:click={handleRunDueNow}
+        disabled={processingAutopay || subscriptions.length === 0}
+      >
+        <svg class={processingAutopay ? 'spin' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+        {processingAutopay ? 'Paying Due Subscriptions...' : `Run Due Now (${dueCount})`}
+      </button>
+
+      <button class="btn btn-primary" on:click={() => (showCreateModal = true)}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New Subscription
+      </button>
+    </div>
   </div>
+
+  {#if autopayStatus}
+    <div class="card {autopayStatus.success ? 'status-success' : 'status-err'}">
+      {autopayStatus.message}
+    </div>
+  {/if}
 
   {#if subscriptions.length === 0}
     <div class="card empty-card">
@@ -110,19 +169,68 @@
 
           <div class="sub-body">
             <div class="sub-amount">${sub.amount}</div>
-            <div class="sub-frequency">Billed {sub.frequency}</div>
+            <div class="sub-meta-row">
+              <span class="sub-frequency">Billed {sub.frequency}</span>
+              <span class="due-tag {isSubscriptionDue(sub) ? 'due-now' : ''}">
+                {getNextDueDate(sub)}
+              </span>
+            </div>
           </div>
 
           <div class="sub-footer">
-            <button class="btn btn-outline btn-xs" on:click={() => toggleSub(sub.id)}>
-              {sub.active ? 'Pause' : 'Resume'}
-            </button>
-            <button class="btn btn-outline btn-xs danger-btn" on:click={() => deleteSub(sub.id)}>
-              Delete
-            </button>
+            <div class="last-paid">
+              Last paid: {sub.lastPaid ? new Date(sub.lastPaid).toLocaleDateString() : 'Never'}
+            </div>
+            <div class="card-actions">
+              <button class="btn btn-outline btn-xs" on:click={() => toggleSub(sub.id)}>
+                {sub.active ? 'Pause' : 'Resume'}
+              </button>
+              <button class="btn btn-outline btn-xs danger-btn" on:click={() => deleteSub(sub.id)}>
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- Autopay Execution History Section -->
+  {#if history.length > 0}
+    <div class="history-section">
+      <div class="section-title">Autopay Execution History</div>
+      <div class="card table-card">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Subscription</th>
+              <th>Recipient</th>
+              <th>Status / Txn</th>
+              <th class="text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each history.slice(0, 10) as item}
+              <tr>
+                <td class="date-col">
+                  {new Date(item.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                </td>
+                <td><strong>{item.name}</strong></td>
+                <td>{item.recipient} ({item.type})</td>
+                <td>
+                  {#if item.status === 'success'}
+                    <span class="badge badge-emerald">Txn #{item.txnId}</span>
+                  {:else}
+                    <span class="badge badge-amber">{item.error}</span>
+                  {/if}
+                </td>
+                <td class="text-right font-mono">${item.amount}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </div>
   {/if}
 
@@ -195,6 +303,12 @@
     gap: 1rem;
   }
 
+  .header-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
   .page-title {
     font-size: 1.8rem;
     font-weight: 800;
@@ -224,7 +338,7 @@
 
   .subs-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: 1rem;
   }
 
@@ -263,18 +377,91 @@
     color: #34d399;
   }
 
+  .sub-meta-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.25rem;
+  }
+
   .sub-frequency {
     font-size: 0.8rem;
     color: #64748b;
     text-transform: capitalize;
   }
 
+  .due-tag {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    font-weight: 600;
+  }
+
+  .due-tag.due-now {
+    color: #f59e0b;
+    font-weight: 700;
+  }
+
   .sub-footer {
     display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
+    justify-content: space-between;
+    align-items: center;
     border-top: 1px solid #334155;
     padding-top: 0.8rem;
+  }
+
+  .last-paid {
+    font-size: 0.75rem;
+    color: #64748b;
+  }
+
+  .card-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .history-section {
+    margin-top: 1.5rem;
+  }
+
+  .section-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 0.75rem;
+  }
+
+  .table-card {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    text-align: left;
+  }
+
+  .history-table th {
+    background: rgba(15, 23, 42, 0.6);
+    padding: 0.65rem 1rem;
+    color: #94a3b8;
+    font-weight: 600;
+    border-bottom: 1px solid #334155;
+  }
+
+  .history-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+    color: #e2e8f0;
+  }
+
+  .text-right {
+    text-align: right;
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
   }
 
   .modal-backdrop {
@@ -323,8 +510,32 @@
     font-size: 0.75rem;
   }
 
+  .status-success {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: #10b981;
+    color: #34d399;
+    padding: 0.75rem 1rem;
+  }
+
+  .status-err {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: #ef4444;
+    color: #fca5a5;
+    padding: 0.75rem 1rem;
+  }
+
   .danger-btn:hover {
     color: #f87171;
     border-color: #ef4444;
+  }
+
+  .spin {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    100% {
+      transform: rotate(360deg);
+    }
   }
 </style>
