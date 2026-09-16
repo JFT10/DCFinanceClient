@@ -220,6 +220,7 @@ export async function treasuryRequest(endpoint, options = {}) {
     throw new Error(`RATE_LIMIT:${retryAfter}`);
   }
 
+  const contentType = response.headers.get('content-type') || '';
   const text = await response.text();
   let json = null;
   try {
@@ -231,6 +232,10 @@ export async function treasuryRequest(endpoint, options = {}) {
   if (!response.ok) {
     const errorMsg = json?.message || json?.error || `HTTP ${response.status}: ${response.statusText}`;
     throw new Error(errorMsg);
+  }
+
+  if (!contentType.includes('application/json') && typeof json !== 'object') {
+    throw new Error('Unexpected response format from Treasury API');
   }
 
   return json;

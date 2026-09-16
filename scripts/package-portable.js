@@ -54,14 +54,15 @@ if (PLAT === 'win32') {
 
 const SERVER_JS = `'use strict';
 /**
- * server.js — zero-dependency static file server for the portable bundle.
+ * server.js — zero-dependency static file server & API proxy for the portable bundle.
  * Compiled to a native binary via @yao-pkg/pkg; users never run this directly.
  * Run with:  ./server [port]    (or server.exe on Windows)
  * Default port: 1420
  */
-const http = require('http');
-const fs   = require('fs');
-const path = require('path');
+const http  = require('http');
+const https = require('https');
+const fs    = require('fs');
+const path  = require('path');
 
 // Inside a pkg binary process.pkg is defined; use execPath dir for on-disk files
 const EXEC_DIR = typeof process.pkg !== 'undefined'
@@ -87,24 +88,83 @@ const MIME = {
 
 function readKey() {
   try {
-    const raw   = fs.readFileSync(KEY_ENV, 'utf8');
-    const match = raw.match(/^TREASURY_API_KEY=(.+)$/m);
-    return match ? match[1].trim() : '';
+    const raw = fs.readFileSync(KEY_ENV, 'utf8');
+    for (const line of raw.split(/\\r?\\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('TREASURY_API_KEY=')) {
+        let key = trimmed.substring('TREASURY_API_KEY='.length).trim();
+        return key.replace(/^["']|["']$/g, '');
+      }
+    }
+    return '';
   } catch (e) { return ''; }
 }
 
 function writeKey(newKey) {
-  const line = 'TREASURY_API_KEY=' + newKey.trim();
-  let existing = '';
-  try { existing = fs.readFileSync(KEY_ENV, 'utf8'); } catch (e) {}
-  const lines = existing.split(/\\r?\\n/).filter(function(l) { return !l.startsWith('TREASURY_API_KEY='); });
-  lines.unshift(line);
-  fs.writeFileSync(KEY_ENV, lines.join('\\n') + '\\n');
+  const cleanKey = (newKey || '').trim().replace(/^["']|["']$/g, '');
+  const content = '# DemocracyCraft Treasury API Key Configuration\\n# Updated by DC Finance Client\\nTREASURY_API_KEY="' + cleanKey + '"\\n';
+  fs.writeFileSync(KEY_ENV, content, 'utf8');
+}
+
+// Reverse-proxy /api/* requests to https://api.democracycraft.net/economy/api/*
+function proxyApiRequest(req, res) {
+  const url = new URL(req.url, 'http://localhost');
+  const targetPath = '/economy' + url.pathname + (url.search || '');
+
+  const forwardHeaders = Object.assign({}, req.headers);
+  forwardHeaders.host = 'api.democracycraft.net';
+  delete forwardHeaders['connection'];
+  delete forwardHeaders['keep-alive'];
+  delete forwardHeaders['transfer-encoding'];
+
+  const options = {
+    hostname: 'api.democracycraft.net',
+    port: 443,
+    path: targetPath,
+    method: req.method,
+    headers: forwardHeaders,
+  };
+
+  const proxyReq = https.request(options, function(proxyRes) {
+    const responseHeaders = Object.assign({}, proxyRes.headers);
+    responseHeaders['access-control-allow-origin'] = '*';
+    responseHeaders['access-control-allow-headers'] = '*';
+    responseHeaders['access-control-allow-methods'] = '*';
+
+    res.writeHead(proxyRes.statusCode, responseHeaders);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', function(err) {
+    console.error('[proxy error]', err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Treasury API proxy error: ' + err.message }));
+    }
+  });
+
+  req.pipe(proxyReq);
 }
 
 http.createServer(function(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'access-control-allow-headers': 'Authorization, Content-Type, Accept',
+    });
+    return res.end();
+  }
+
+  // Reverse proxy API calls to DemocracyCraft Treasury API
+  if (url.pathname.startsWith('/api/')) {
+    return proxyApiRequest(req, res);
+  }
+
+  // Key management endpoint
   if (url.pathname === '/__api/env-key') {
     if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -118,13 +178,14 @@ http.createServer(function(req, res) {
           const parsed = JSON.parse(body);
           writeKey(parsed.key || '');
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, success: true }));
         } catch (e) { res.writeHead(400); res.end('Bad JSON'); }
       });
       return;
     }
   }
 
+  // Static files with SPA fallback
   let filePath = path.join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(DIST, 'index.html');
