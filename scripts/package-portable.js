@@ -232,6 +232,11 @@ fs.writeFileSync(path.join(OUT, 'server.js'),  SERVER_JS);
 fs.writeFileSync(path.join(OUT, 'start.sh'),   START_SH);
 fs.writeFileSync(path.join(OUT, 'start.bat'),  START_BAT);
 fs.chmodSync(path.join(OUT, 'start.sh'), 0o755);
+// Minimal package.json so Node treats server.js as ESM (no warning)
+fs.writeFileSync(
+  path.join(OUT, 'package.json'),
+  JSON.stringify({ name: 'dc-finance-client-portable', version: '1.0.0', private: true, type: 'module' }, null, 2) + '\n'
+);
 
 // ── 4. Done ───────────────────────────────────────────────────────────────────
 console.log('\n[4/4] Done!');
